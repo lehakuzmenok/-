@@ -1,0 +1,713 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { 
+  ShoppingBag, ArrowLeft, Trash2, Plus, Minus, CheckCircle,
+  Package, Search, Settings, Edit2, Save, X, Upload,
+  Image as ImageIcon, Phone, Mail, Box, ClipboardList, ShieldAlert, LogOut, Lock,
+  Truck, ShieldCheck, Banknote, Menu
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, onSnapshot, addDoc, deleteDoc } from 'firebase/firestore';
+
+// --- ИНИЦИАЛИЗАЦИЯ FIREBASE ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'angar-default';
+
+const CATEGORIES = [
+  { id: 'all', name: 'Все товары' },
+  { id: 'tools', name: 'Инструменты' },
+  { id: 'materials', name: 'Стройматериалы' },
+  { id: 'electrical', name: 'Электрика' },
+  { id: 'plumbing', name: 'Сантехника' },
+];
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // --- СОСТОЯНИЯ ПРИЛОЖЕНИЯ ---
+  const [currentView, setCurrentView] = useState('home'); 
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Данные
+  const [products, setProducts] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [cart, setCart] = useState([]);
+  
+  // Настройки
+  const [storeConfig, setStoreConfig] = useState({
+    name: 'АНГАР',
+    phone: '+7 (800) 555-35-35',
+    email: 'info@angar-build.ru',
+    themeColor: 'slate'
+  });
+
+  const themes = {
+    blue: { bg: 'bg-blue-800', hover: 'hover:bg-blue-900', text: 'text-blue-800', border: 'border-blue-800', ring: 'focus:ring-blue-800' },
+    slate: { bg: 'bg-slate-800', hover: 'hover:bg-slate-900', text: 'text-slate-800', border: 'border-slate-800', ring: 'focus:ring-slate-800' },
+    emerald: { bg: 'bg-emerald-700', hover: 'hover:bg-emerald-800', text: 'text-emerald-700', border: 'border-emerald-700', ring: 'focus:ring-emerald-700' },
+    red: { bg: 'bg-red-800', hover: 'hover:bg-red-900', text: 'text-red-800', border: 'border-red-800', ring: 'focus:ring-red-800' }
+  };
+  const t = themes[storeConfig.themeColor] || themes.slate;
+
+  // --- СОСТОЯНИЯ МОДАЛЬНЫХ ОКОН ---
+  const [loginModal, setLoginModal] = useState({ isOpen: false, password: '', error: '' });
+  const [alertModal, setAlertModal] = useState({ isOpen: false, message: '' });
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null });
+
+  const showAlert = (message) => setAlertModal({ isOpen: true, message });
+  const showConfirm = (message, onConfirm) => setConfirmModal({ isOpen: true, message, onConfirm });
+
+  // --- ПОДКЛЮЧЕНИЕ К ОБЛАКУ ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth error:", error);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (sessionStorage.getItem('angarAdmin') === 'true') {
+        setIsAdmin(true);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    
+    // Подписка на настройки
+    const configDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'main');
+    const unsubConfig = onSnapshot(configDocRef, (docSnap) => {
+      if (docSnap.exists()) setStoreConfig(docSnap.data());
+    }, (error) => console.error("Config fetch error", error));
+
+    // Подписка на товары
+    const productsRef = collection(db, 'artifacts', appId, 'public', 'data', 'products');
+    const unsubProducts = onSnapshot(productsRef, (snapshot) => {
+      const prods = [];
+      snapshot.forEach((doc) => prods.push({ id: doc.id, ...doc.data() }));
+      setProducts(prods);
+    }, (error) => console.error("Products fetch error", error));
+
+    return () => { unsubConfig(); unsubProducts(); };
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !isAdmin) return;
+    // Подписка на заказы (только для админа)
+    const ordersRef = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+    const unsubOrders = onSnapshot(ordersRef, (snapshot) => {
+      const ords = [];
+      snapshot.forEach((doc) => ords.push({ id: doc.id, ...doc.data() }));
+      ords.sort((a, b) => b.timestamp - a.timestamp);
+      setOrders(ords);
+    }, (error) => console.error("Orders fetch error", error));
+
+    return () => unsubOrders();
+  }, [user, isAdmin]);
+
+  // --- ЛОГИКА ВХОДА ---
+  const handleLoginSubmit = () => {
+    if (loginModal.password === '06101982') {
+      setIsAdmin(true);
+      sessionStorage.setItem('angarAdmin', 'true');
+      setLoginModal({ isOpen: false, password: '', error: '' });
+      showAlert('Вы успешно вошли как администратор');
+    } else {
+      setLoginModal({ ...loginModal, error: 'Неверный пароль!' });
+    }
+  };
+
+  const handleLogoutAdmin = () => {
+    setIsAdmin(false);
+    sessionStorage.removeItem('angarAdmin');
+    setCurrentView('home');
+  };
+
+  // --- ЛОГИКА КОРЗИНЫ ---
+  const cartTotalAmount = cart.reduce((sum, item) => sum + (Number(item.price) * item.quantity), 0);
+  const cartItemsCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+  const addToCart = (product) => {
+    setCart(prev => {
+      const existing = prev.find(item => item.id === product.id);
+      if (existing) return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+      return [...prev, { ...product, quantity: 1 }];
+    });
+    showAlert(`Товар "${product.name}" добавлен в корзину.`);
+  };
+
+  const updateQuantity = (id, delta) => setCart(prev => prev.map(item => {
+    if (item.id === id) { const newQ = item.quantity + delta; return newQ > 0 ? { ...item, quantity: newQ } : item; }
+    return item;
+  }));
+  const removeFromCart = (id) => setCart(prev => prev.filter(item => item.id !== id));
+  const clearCart = () => setCart([]);
+  const formatPrice = (price) => new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(price);
+
+  // --- КОМПОНЕНТЫ ---
+
+  const Navbar = () => (
+    <header className="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-sm">
+      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="flex items-center gap-3 cursor-pointer select-none" onClick={() => setCurrentView('home')}>
+          <div className={`${t.bg} p-2 rounded-sm`}><Box size={24} className="text-white" /></div>
+          <span className="font-bold text-2xl tracking-tight text-slate-900 uppercase hidden sm:block">{storeConfig.name}</span>
+          {isAdmin && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded border border-red-200 font-bold ml-2">АДМИН</span>}
+        </div>
+        
+        {/* Кнопки для десктопа */}
+        <div className="hidden md:flex items-center gap-4">
+          <div className="flex items-center gap-4 text-sm text-gray-600 mr-2 border-r border-gray-200 pr-4 font-medium">
+            <a href={`tel:${storeConfig.phone}`} className="flex items-center gap-1.5 hover:text-slate-900 transition-colors"><Phone size={14}/> {storeConfig.phone}</a>
+          </div>
+
+          {isAdmin ? (
+            <>
+              <button onClick={() => setCurrentView('orders')} className={`p-2.5 rounded-sm transition-colors flex items-center gap-2 ${currentView === 'orders' ? `${t.text} bg-gray-100` : 'text-gray-500 hover:bg-gray-100 hover:text-slate-900'}`} title="Заказы"><ClipboardList size={20} /> <span className="text-sm font-medium">Заказы</span></button>
+              <button onClick={() => setCurrentView('admin')} className={`p-2.5 rounded-sm transition-colors flex items-center gap-2 ${currentView === 'admin' ? `${t.text} bg-gray-100` : 'text-gray-500 hover:bg-gray-100 hover:text-slate-900'}`} title="Настройки"><Settings size={20} /> <span className="text-sm font-medium">Управление</span></button>
+              <button onClick={handleLogoutAdmin} className="p-2.5 rounded-sm text-red-500 hover:bg-red-50 transition-colors ml-2" title="Выйти"><LogOut size={20} /></button>
+            </>
+          ) : (
+            <button onClick={() => setCurrentView('home')} className={`p-2.5 rounded-sm transition-colors flex items-center gap-2 ${currentView === 'home' ? `${t.text} bg-gray-100` : 'text-gray-500 hover:bg-gray-100 hover:text-slate-900'}`} title="Каталог"><Package size={20} /> <span className="text-sm font-medium">Каталог</span></button>
+          )}
+          
+          <button onClick={() => setCurrentView('cart')} className={`flex items-center gap-2 px-4 py-2 border rounded-sm transition-colors ml-2 ${cartItemsCount > 0 ? `${t.border} ${t.text} bg-gray-50` : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
+            <ShoppingBag size={20} />
+            <span className="font-medium text-sm text-slate-800">{cartTotalAmount > 0 ? formatPrice(cartTotalAmount) : 'Корзина'}</span>
+            {cartItemsCount > 0 && <span className={`ml-1 px-2 py-0.5 text-xs font-bold text-white ${t.bg} rounded-sm`}>{cartItemsCount}</span>}
+          </button>
+        </div>
+
+        {/* Мобильное меню */}
+        <div className="md:hidden flex items-center gap-2">
+           <button onClick={() => setCurrentView('cart')} className="relative p-2 text-gray-600">
+             <ShoppingBag size={24} />
+             {cartItemsCount > 0 && <span className={`absolute top-0 right-0 px-1.5 py-0.5 text-[10px] font-bold text-white ${t.bg} rounded-full`}>{cartItemsCount}</span>}
+           </button>
+           <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 text-gray-600">
+             {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+           </button>
+        </div>
+      </div>
+
+      {/* Выпадающее мобильное меню */}
+      {isMobileMenuOpen && (
+        <div className="md:hidden bg-white border-b border-gray-200 px-4 py-4 space-y-3 shadow-lg absolute w-full">
+            <a href={`tel:${storeConfig.phone}`} className="flex items-center gap-2 text-gray-700 py-2 border-b border-gray-100"><Phone size={18}/> {storeConfig.phone}</a>
+            {!isAdmin ? (
+                <button onClick={() => {setCurrentView('home'); setIsMobileMenuOpen(false)}} className="flex items-center gap-2 w-full text-left py-2 text-gray-700"><Package size={18}/> Каталог</button>
+            ) : (
+                <>
+                <button onClick={() => {setCurrentView('orders'); setIsMobileMenuOpen(false)}} className="flex items-center gap-2 w-full text-left py-2 text-gray-700"><ClipboardList size={18}/> Журнал заказов</button>
+                <button onClick={() => {setCurrentView('admin'); setIsMobileMenuOpen(false)}} className="flex items-center gap-2 w-full text-left py-2 text-gray-700"><Settings size={18}/> Управление магазином</button>
+                <button onClick={() => {handleLogoutAdmin(); setIsMobileMenuOpen(false)}} className="flex items-center gap-2 w-full text-left py-2 text-red-500"><LogOut size={18}/> Выйти из админки</button>
+                </>
+            )}
+        </div>
+      )}
+    </header>
+  );
+
+  const HomeView = () => {
+    const filteredProducts = useMemo(() => {
+      return products.filter(product => {
+        const matchCat = selectedCategory === 'all' || product.category === selectedCategory;
+        const matchSearch = product.name.toLowerCase().includes(searchQuery.toLowerCase());
+        return matchCat && matchSearch;
+      });
+    }, [selectedCategory, searchQuery, products]);
+
+    return (
+      <div>
+        {/* HERO SECTION */}
+        {selectedCategory === 'all' && !searchQuery && (
+            <div className={`${t.bg} text-white py-16 px-4 mb-8`}>
+                <div className="max-w-7xl mx-auto flex flex-col items-center text-center">
+                    <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight mb-6 uppercase">Надежный поставщик<br/>строительных решений</h1>
+                    <p className="text-lg md:text-xl opacity-90 max-w-2xl mb-10 font-light">Комплексное снабжение объектов. Оригинальные инструменты, качественные материалы и профессиональное оборудование по оптовым ценам.</p>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-4xl mt-4">
+                        <div className="bg-white/10 backdrop-blur-sm p-6 rounded-sm border border-white/20 flex flex-col items-center">
+                            <Truck size={32} className="mb-3 opacity-80" />
+                            <h3 className="font-bold text-lg mb-1">Быстрая логистика</h3>
+                            <p className="text-sm opacity-80 text-center">Доставка собственным автопарком</p>
+                        </div>
+                        <div className="bg-white/10 backdrop-blur-sm p-6 rounded-sm border border-white/20 flex flex-col items-center">
+                            <Banknote size={32} className="mb-3 opacity-80" />
+                            <h3 className="font-bold text-lg mb-1">Оптовые цены</h3>
+                            <p className="text-sm opacity-80 text-center">Прямые контракты с производителями</p>
+                        </div>
+                        <div className="bg-white/10 backdrop-blur-sm p-6 rounded-sm border border-white/20 flex flex-col items-center">
+                            <ShieldCheck size={32} className="mb-3 opacity-80" />
+                            <h3 className="font-bold text-lg mb-1">Гарантия качества</h3>
+                            <p className="text-sm opacity-80 text-center">Продукция сертифицирована по ГОСТ</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        <div className="max-w-7xl mx-auto px-4 py-8">
+            <div className="flex flex-col md:flex-row gap-4 mb-8 justify-between items-start md:items-center bg-white p-4 border border-gray-200 rounded-sm shadow-sm sticky top-16 z-30">
+                <div className="flex flex-wrap gap-2">
+                    {CATEGORIES.map(category => (
+                    <button key={category.id} onClick={() => setSelectedCategory(category.id)} className={`px-4 py-2 text-sm font-medium rounded-sm border transition-colors ${selectedCategory === category.id ? `${t.bg} text-white border-transparent` : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>{category.name}</button>
+                    ))}
+                </div>
+                <div className="relative w-full md:w-80">
+                    <input type="text" placeholder="Поиск по каталогу..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className={`w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-sm focus:outline-none focus:ring-1 ${t.ring} focus:border-transparent`} />
+                    <Search className="absolute left-3 top-2.5 text-gray-400" size={18} />
+                </div>
+            </div>
+
+            {products.length === 0 ? (
+            <div className="text-center py-20 bg-white border border-gray-200 rounded-sm">
+                <Package size={64} className="mx-auto text-gray-300 mb-4" />
+                <h3 className="text-xl font-bold text-slate-800">Каталог формируется</h3>
+                <p className="text-gray-500 mt-2 max-w-md mx-auto">Администратор магазина обновляет ассортимент. Загляните позже.</p>
+            </div>
+            ) : filteredProducts.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                {filteredProducts.map(product => (
+                <div key={product.id} className="bg-white border border-gray-200 rounded-sm flex flex-col group hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
+                    <div className="h-56 border-b border-gray-100 flex items-center justify-center bg-gray-50 p-4 relative overflow-hidden">
+                    {product.image ? <img src={product.image} alt={product.name} className="max-w-full max-h-full object-contain mix-blend-multiply group-hover:scale-105 transition-transform duration-300" /> : <ImageIcon size={48} className="text-gray-300" />}
+                    <span className="absolute top-2 left-2 bg-white/90 backdrop-blur text-xs font-semibold px-2 py-1 border border-gray-200 rounded-sm text-gray-600 shadow-sm">Арт. {product.id.toString().substring(0,6)}</span>
+                    </div>
+                    <div className="p-5 flex flex-col flex-grow">
+                    <span className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">{CATEGORIES.find(c => c.id === product.category)?.name}</span>
+                    <h3 className="font-bold text-slate-900 text-sm mb-4 flex-grow leading-snug">{product.name}</h3>
+                    <div className="flex items-center justify-between border-t border-gray-100 pt-4 mt-auto">
+                        <span className="text-xl font-extrabold text-slate-900">{formatPrice(product.price)}</span>
+                        <button onClick={() => addToCart(product)} className={`p-2 rounded-sm border transition-colors flex items-center justify-center ${t.border} ${t.text} hover:${t.bg} hover:text-white group-hover:${t.bg} group-hover:text-white`}><Plus size={20} /></button>
+                    </div>
+                    </div>
+                </div>
+                ))}
+            </div>
+            ) : (
+            <div className="text-center py-20 bg-white border border-gray-200 rounded-sm">
+                <Search size={48} className="mx-auto text-gray-300 mb-4" />
+                <h3 className="text-lg font-medium text-slate-700">Товары не найдены</h3>
+                <p className="text-sm text-gray-500 mt-2">Попробуйте изменить параметры поиска или категорию.</p>
+            </div>
+            )}
+        </div>
+      </div>
+    );
+  };
+
+  const CartView = () => (
+    <div className="max-w-6xl mx-auto px-4 py-8">
+      <button onClick={() => setCurrentView('home')} className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-slate-900 mb-8 transition-colors"><ArrowLeft size={16} /> Назад в каталог</button>
+      <h1 className="text-3xl font-extrabold text-slate-900 mb-8 pb-4 border-b border-gray-200">Корзина ({cartItemsCount})</h1>
+      
+      {cart.length === 0 ? (
+        <div className="bg-white border border-gray-200 rounded-sm p-16 text-center shadow-sm">
+          <ShoppingBag size={64} className="mx-auto text-gray-200 mb-6" />
+          <h2 className="text-2xl font-bold text-slate-800 mb-4">Ваша корзина пуста</h2>
+          <button onClick={() => setCurrentView('home')} className={`${t.bg} text-white px-8 py-3 rounded-sm text-base font-bold hover:opacity-90 transition-opacity mt-4`}>Перейти в каталог</button>
+        </div>
+      ) : (
+        <div className="flex flex-col lg:flex-row gap-8">
+          <div className="flex-grow space-y-4">
+            {cart.map(item => (
+              <div key={item.id} className="bg-white border border-gray-200 rounded-sm p-5 flex flex-col sm:flex-row items-center gap-6 shadow-sm">
+                <div className="w-24 h-24 bg-gray-50 border border-gray-100 rounded-sm flex items-center justify-center flex-shrink-0">
+                  {item.image ? <img src={item.image} alt={item.name} className="max-w-full max-h-full object-contain p-2 mix-blend-multiply" /> : <ImageIcon size={32} className="text-gray-300"/>}
+                </div>
+                <div className="flex-grow text-center sm:text-left w-full">
+                  <h3 className="font-bold text-slate-900 text-base mb-1">{item.name}</h3>
+                  <p className="text-gray-500 text-sm font-medium">{formatPrice(item.price)} / шт.</p>
+                </div>
+                <div className="flex items-center justify-between w-full sm:w-auto gap-8">
+                  <div className="flex items-center border border-gray-300 rounded-sm bg-white">
+                    <button onClick={() => updateQuantity(item.id, -1)} className="p-2 hover:bg-gray-100 text-gray-600"><Minus size={16} /></button>
+                    <span className="w-12 text-center text-sm font-bold border-x border-gray-300 py-2">{item.quantity}</span>
+                    <button onClick={() => updateQuantity(item.id, 1)} className="p-2 hover:bg-gray-100 text-gray-600"><Plus size={16} /></button>
+                  </div>
+                  <div className="w-32 text-right">
+                    <span className="font-extrabold text-xl text-slate-900">{formatPrice(item.price * item.quantity)}</span>
+                  </div>
+                  <button onClick={() => removeFromCart(item.id)} className="text-gray-400 hover:text-red-600 p-2"><Trash2 size={20} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="w-full lg:w-96 flex-shrink-0">
+            <div className="bg-slate-50 border border-gray-200 rounded-sm p-8 sticky top-24 shadow-sm">
+              <h3 className="text-xl font-bold text-slate-900 mb-6 border-b border-gray-200 pb-4">Сводка заказа</h3>
+              <div className="flex justify-between text-base text-gray-600 mb-4 font-medium"><span>Всего позиций:</span><span>{cartItemsCount} шт.</span></div>
+              <div className="flex justify-between items-center border-t border-gray-200 pt-6 mb-8">
+                <span className="font-bold text-slate-900 text-lg">Итого:</span>
+                <span className="font-black text-3xl text-slate-900">{formatPrice(cartTotalAmount)}</span>
+              </div>
+              <button onClick={() => setCurrentView('checkout')} className={`w-full ${t.bg} text-white font-bold py-4 rounded-sm hover:opacity-90 transition-opacity text-lg`}>Перейти к оформлению</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const CheckoutView = () => {
+    const [formData, setFormData] = useState({ phone: '', city: '', street: '', house: '', comment: '' });
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    
+    const handleSubmit = async (e) => {
+      e.preventDefault();
+      if (!user) return;
+      setIsSubmitting(true);
+      try {
+        const orderData = { customer: formData, items: cart, total: cartTotalAmount, status: 'new', timestamp: Date.now(), userId: user.uid };
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'orders'), orderData);
+        clearCart();
+        setCurrentView('success');
+      } catch (error) {
+        console.error(error);
+        showAlert("Ошибка при оформлении. Проверьте соединение.");
+      } finally { setIsSubmitting(false); }
+    };
+
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        <button onClick={() => setCurrentView('cart')} className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-slate-900 mb-8"><ArrowLeft size={16} /> Назад в корзину</button>
+        <h1 className="text-3xl font-extrabold text-slate-900 mb-8 pb-4 border-b border-gray-200">Оформление заявки</h1>
+        <div className="flex flex-col md:flex-row gap-8">
+            <form onSubmit={handleSubmit} className="flex-grow space-y-8 bg-white border border-gray-200 rounded-sm p-8 shadow-sm">
+            <section>
+                <h2 className="text-base font-bold text-slate-800 uppercase tracking-wider border-b border-gray-100 pb-3 mb-5 flex items-center gap-2"><Phone size={18}/> Контактные данные</h2>
+                <div className="w-full md:w-2/3">
+                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Номер телефона <span className="text-red-500">*</span></label>
+                <input required type="tel" className={`w-full p-3 border border-gray-300 rounded-sm text-base focus:outline-none focus:ring-2 ${t.ring}`} placeholder="+7 (999) 000-00-00" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
+                </div>
+            </section>
+            <section>
+                <h2 className="text-base font-bold text-slate-800 uppercase tracking-wider border-b border-gray-100 pb-3 mb-5 flex items-center gap-2"><Truck size={18}/> Адрес доставки</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Город / Нас. пункт <span className="text-red-500">*</span></label><input required type="text" className={`w-full p-3 border border-gray-300 rounded-sm text-base focus:outline-none focus:ring-2 ${t.ring}`} placeholder="г. Москва" value={formData.city} onChange={e => setFormData({...formData, city: e.target.value})} /></div>
+                    <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Улица <span className="text-red-500">*</span></label><input required type="text" className={`w-full p-3 border border-gray-300 rounded-sm text-base focus:outline-none focus:ring-2 ${t.ring}`} placeholder="ул. Ленина" value={formData.street} onChange={e => setFormData({...formData, street: e.target.value})} /></div>
+                    <div className="md:col-span-2"><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Дом, корпус <span className="text-red-500">*</span></label><input required type="text" className={`w-full md:w-1/2 p-3 border border-gray-300 rounded-sm text-base focus:outline-none focus:ring-2 ${t.ring}`} placeholder="д. 10, стр. 2" value={formData.house} onChange={e => setFormData({...formData, house: e.target.value})} /></div>
+                </div>
+            </section>
+            <section>
+                <h2 className="text-base font-bold text-slate-800 uppercase tracking-wider border-b border-gray-100 pb-3 mb-5">Дополнительно</h2>
+                <textarea rows="4" className={`w-full p-3 border border-gray-300 rounded-sm text-base focus:outline-none focus:ring-2 ${t.ring} resize-none`} placeholder="Комментарий к заказу..." value={formData.comment} onChange={e => setFormData({...formData, comment: e.target.value})} />
+            </section>
+            <div className="pt-4 flex flex-col sm:flex-row justify-between items-center gap-6">
+                <button type="submit" disabled={isSubmitting} className={`${t.bg} text-white font-bold py-4 px-10 rounded-sm hover:opacity-90 disabled:opacity-50 transition-opacity w-full sm:w-auto`}>
+                {isSubmitting ? 'Отправка...' : 'Подтвердить заказ'}
+                </button>
+            </div>
+            </form>
+
+            <div className="w-full md:w-80 flex-shrink-0 hidden md:block">
+               <div className="bg-slate-50 border border-gray-200 rounded-sm p-6 sticky top-24">
+                  <h3 className="font-bold text-slate-900 mb-4 border-b border-gray-200 pb-2">Сумма к оплате</h3>
+                  <div className="flex justify-between items-end mb-2">
+                      <span className="text-gray-500 text-sm">Товары:</span>
+                      <span className="font-bold text-lg text-slate-900">{formatPrice(cartTotalAmount)}</span>
+                  </div>
+               </div>
+            </div>
+        </div>
+      </div>
+    );
+  };
+
+  const SuccessView = () => (
+    <div className="max-w-2xl mx-auto px-4 py-32 text-center">
+      <div className="inline-flex items-center justify-center w-24 h-24 bg-green-100 rounded-full mb-8 border-4 border-white shadow-lg">
+        <CheckCircle size={48} className="text-green-600" />
+      </div>
+      <h1 className="text-4xl font-extrabold text-slate-900 mb-4">Заявка принята!</h1>
+      <p className="text-gray-600 mb-10 text-lg">Специалист свяжется с вами по указанному телефону.</p>
+      <button onClick={() => setCurrentView('home')} className={`border-2 border-slate-300 text-slate-800 font-bold py-3 px-10 rounded-sm hover:bg-slate-50`}>Вернуться на главную</button>
+    </div>
+  );
+
+  const AdminView = () => {
+    if (!isAdmin) return null;
+
+    const [activeTab, setActiveTab] = useState('products');
+    const [editingId, setEditingId] = useState(null);
+    const [editForm, setEditForm] = useState({});
+    const [isAdding, setIsAdding] = useState(false);
+    const [settingsForm, setSettingsForm] = useState(storeConfig);
+
+    const handleEdit = (product) => { setEditingId(product.id); setEditForm(product); setIsAdding(false); };
+    
+    const handleDelete = (id) => {
+      showConfirm('Удалить данный товар из базы?', async () => {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', id));
+      });
+    };
+
+    const cancelEdit = () => { setEditingId(null); setIsAdding(false); };
+    
+    const handleSave = async () => {
+      if (!editForm.name || !editForm.price) { showAlert("Укажите наименование и цену."); return; }
+      try {
+        if (isAdding) {
+          await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'products'), { ...editForm, price: Number(editForm.price) });
+        } else {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', editingId), { ...editForm, price: Number(editForm.price) }, { merge: true });
+        }
+        setIsAdding(false); setEditingId(null);
+      } catch (error) { console.error(error); showAlert("Ошибка БД."); }
+    };
+
+    const handleAddNew = () => { setIsAdding(true); setEditingId(null); setEditForm({ name: '', price: '', category: 'tools', image: null }); };
+
+    const handleImageUpload = (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        if(file.size > 1024 * 1024) { showAlert("Фото слишком тяжелое. Максимум 1МБ."); return; }
+        const reader = new FileReader();
+        reader.onloadend = () => setEditForm({ ...editForm, image: reader.result });
+        reader.readAsDataURL(file);
+      }
+    };
+
+    const saveSettings = async () => {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'main'), settingsForm);
+      showAlert('Настройки сохранены в облаке.');
+    };
+
+    return (
+      <div className="max-w-7xl mx-auto px-4 py-8">
+        <h1 className="text-3xl font-extrabold text-slate-900 flex items-center gap-3 mb-8 border-b border-gray-200 pb-4"><ShieldAlert className="text-red-600" size={32}/> Управление порталом</h1>
+        <div className="flex gap-2 mb-8">
+          <button onClick={() => setActiveTab('products')} className={`px-6 py-3 text-sm font-bold uppercase tracking-wider rounded-sm ${activeTab === 'products' ? `bg-slate-900 text-white` : 'bg-white border border-gray-200 text-gray-600'}`}>Номенклатура</button>
+          <button onClick={() => setActiveTab('settings')} className={`px-6 py-3 text-sm font-bold uppercase tracking-wider rounded-sm ${activeTab === 'settings' ? `bg-slate-900 text-white` : 'bg-white border border-gray-200 text-gray-600'}`}>Настройки</button>
+        </div>
+
+        {activeTab === 'products' && (
+          <div className="bg-white border border-gray-200 rounded-sm shadow-sm">
+            <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+              <h2 className="text-base font-bold text-slate-800">База товаров ({products.length})</h2>
+              <button onClick={handleAddNew} className={`${t.bg} text-white px-5 py-2 rounded-sm text-sm font-bold flex items-center gap-2`}><Plus size={18} /> Добавить позицию</button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm whitespace-nowrap">
+                <thead><tr className="bg-white border-b border-gray-200 text-gray-500 text-xs uppercase"><th className="p-4 font-bold w-24 text-center">Фото</th><th className="p-4 font-bold">Наименование</th><th className="p-4 font-bold w-32">Цена (₽)</th><th className="p-4 font-bold w-48">Категория</th><th className="p-4 font-bold text-right w-28">Действия</th></tr></thead>
+                <tbody className="divide-y divide-gray-100">
+                  {isAdding && (
+                    <tr className="bg-blue-50">
+                      <td className="p-4"><label className="cursor-pointer flex flex-col items-center justify-center w-14 h-14 border-2 border-dashed border-blue-400 rounded bg-white overflow-hidden text-blue-500">{editForm.image ? <img src={editForm.image} alt="preview" className="w-full h-full object-cover" /> : <Upload size={18} />}<input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} /></label></td>
+                      <td className="p-4"><input type="text" placeholder="Название..." value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} className="w-full p-2 border border-blue-300 rounded-sm text-sm" /></td>
+                      <td className="p-4"><input type="number" placeholder="0" value={editForm.price} onChange={e => setEditForm({...editForm, price: e.target.value})} className="w-full p-2 border border-blue-300 rounded-sm text-sm" /></td>
+                      <td className="p-4"><select value={editForm.category} onChange={e => setEditForm({...editForm, category: e.target.value})} className="w-full p-2 border border-blue-300 rounded-sm text-sm bg-white">{CATEGORIES.filter(c=>c.id!=='all').map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
+                      <td className="p-4 text-right"><div className="flex justify-end gap-2"><button onClick={handleSave} className="p-2 bg-blue-600 text-white rounded-sm"><Save size={18}/></button><button onClick={cancelEdit} className="p-2 bg-gray-300 text-gray-700 rounded-sm"><X size={18}/></button></div></td>
+                    </tr>
+                  )}
+                  {products.map(product => (
+                    <tr key={product.id} className="hover:bg-gray-50">
+                      {editingId === product.id ? (
+                        <>
+                          <td className="p-4"><label className="cursor-pointer flex flex-col items-center justify-center w-14 h-14 border-2 border-dashed border-blue-400 rounded bg-white overflow-hidden text-blue-500">{editForm.image ? <img src={editForm.image} alt="preview" className="w-full h-full object-cover" /> : <Upload size={18} />}<input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} /></label></td>
+                          <td className="p-4"><input type="text" value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} className="w-full p-2 border border-blue-300 rounded-sm text-sm" /></td>
+                          <td className="p-4"><input type="number" value={editForm.price} onChange={e => setEditForm({...editForm, price: e.target.value})} className="w-full p-2 border border-blue-300 rounded-sm text-sm" /></td>
+                          <td className="p-4"><select value={editForm.category} onChange={e => setEditForm({...editForm, category: e.target.value})} className="w-full p-2 border border-blue-300 rounded-sm text-sm bg-white">{CATEGORIES.filter(c=>c.id!=='all').map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
+                          <td className="p-4 text-right"><div className="flex justify-end gap-2"><button onClick={handleSave} className="p-2 bg-blue-600 text-white rounded-sm"><Save size={18}/></button><button onClick={cancelEdit} className="p-2 bg-gray-300 text-gray-700 rounded-sm"><X size={18}/></button></div></td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="p-4 text-center"><div className="w-12 h-12 bg-white border border-gray-200 rounded flex mx-auto overflow-hidden">{product.image ? <img src={product.image} className="w-full h-full object-cover" /> : <ImageIcon size={20} className="m-auto text-gray-300"/>}</div></td>
+                          <td className="p-4 font-bold text-slate-800 min-w-[200px] whitespace-normal">{product.name}</td>
+                          <td className="p-4 font-medium">{product.price} ₽</td>
+                          <td className="p-4"><span className="text-xs font-semibold text-gray-600 bg-gray-100 px-2.5 py-1 rounded-sm border border-gray-200">{CATEGORIES.find(c => c.id === product.category)?.name}</span></td>
+                          <td className="p-4 text-right"><div className="flex justify-end gap-2"><button onClick={() => handleEdit(product)} className="p-2 text-slate-500 hover:text-slate-900 bg-slate-100 rounded-sm"><Edit2 size={16}/></button><button onClick={() => handleDelete(product.id)} className="p-2 text-red-500 hover:text-white bg-red-50 hover:bg-red-500 rounded-sm"><Trash2 size={16}/></button></div></td>
+                        </>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'settings' && (
+          <div className="bg-white border border-gray-200 rounded-sm shadow-sm max-w-2xl">
+            <div className="p-5 border-b border-gray-200 bg-gray-50"><h2 className="text-base font-bold text-slate-800">Реквизиты портала</h2></div>
+            <div className="p-8 space-y-6">
+              <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Название компании</label><input type="text" value={settingsForm.name} onChange={e => setSettingsForm({...settingsForm, name: e.target.value})} className="w-full p-3 border border-gray-300 rounded-sm" /></div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Контактный телефон</label><input type="text" value={settingsForm.phone} onChange={e => setSettingsForm({...settingsForm, phone: e.target.value})} className="w-full p-3 border border-gray-300 rounded-sm" /></div>
+                <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Email для связи</label><input type="email" value={settingsForm.email} onChange={e => setSettingsForm({...settingsForm, email: e.target.value})} className="w-full p-3 border border-gray-300 rounded-sm" /></div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Фирменный цвет</label>
+                <div className="flex gap-4">
+                  {['slate', 'blue', 'emerald', 'red'].map(c => (
+                    <button key={c} onClick={() => setSettingsForm({...settingsForm, themeColor: c})} className={`w-12 h-12 rounded-sm ${themes[c].bg} flex items-center justify-center transition-all ${settingsForm.themeColor === c ? 'ring-4 ring-offset-2 ring-slate-800 scale-110' : 'opacity-80'}`}>
+                        {settingsForm.themeColor === c && <CheckCircle size={20} className="text-white"/>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="pt-6 border-t border-gray-200"><button onClick={saveSettings} className="bg-slate-900 text-white px-8 py-3 rounded-sm font-bold hover:opacity-90">Сохранить</button></div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const OrdersView = () => {
+    if (!isAdmin) return null;
+    const deleteOrder = (id) => showConfirm('Удалить эту заявку?', async () => await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', id)));
+
+    return (
+      <div className="max-w-7xl mx-auto px-4 py-8">
+        <h1 className="text-3xl font-extrabold text-slate-900 mb-8 pb-4 border-b border-gray-200 flex items-center gap-3"><ClipboardList className="text-slate-700" size={32}/> Журнал заявок</h1>
+        {orders.length === 0 ? (
+            <div className="bg-white p-16 text-center text-gray-500 border border-gray-200 rounded-sm shadow-sm">
+                <ClipboardList size={48} className="mx-auto mb-4 text-gray-300" />
+                <p className="text-lg font-medium">Новых заявок пока нет.</p>
+            </div>
+        ) : (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                {orders.map(order => (
+                    <div key={order.id} className="bg-white border border-gray-200 rounded-sm overflow-hidden shadow-sm">
+                        <div className="bg-slate-50 p-4 border-b border-gray-200 flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                                <span className="font-bold text-slate-900 text-lg">{new Date(order.timestamp).toLocaleString('ru-RU')}</span>
+                                <span className="text-xs font-bold uppercase bg-yellow-100 text-yellow-800 px-2 py-1 rounded border border-yellow-200">Новая</span>
+                            </div>
+                            <button onClick={()=>deleteOrder(order.id)} className="text-gray-400 hover:text-red-500 p-1"><Trash2 size={20}/></button>
+                        </div>
+                        <div className="p-5 flex flex-col sm:flex-row gap-6">
+                            <div className="flex-1">
+                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-1.5"><Phone size={14}/> Контакты и адрес</h3>
+                                <div className="text-sm space-y-2 text-slate-800">
+                                    <p className="font-bold text-base">{order.customer.phone}</p>
+                                    <p className="flex items-start gap-2"><Truck size={16} className="mt-0.5 text-gray-400 shrink-0"/> г. {order.customer.city}, ул. {order.customer.street}, {order.customer.house}</p>
+                                    {order.customer.comment && <div className="mt-3 bg-yellow-50 p-3 border border-yellow-100 rounded-sm text-sm italic">"{order.customer.comment}"</div>}
+                                </div>
+                            </div>
+                            <div className="flex-1 bg-gray-50 p-4 rounded-sm border border-gray-100">
+                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-1.5"><Package size={14}/> Позиции ({formatPrice(order.total)})</h3>
+                                <ul className="text-sm divide-y divide-gray-200/60 max-h-40 overflow-y-auto pr-2">
+                                    {order.items.map((item, idx) => (
+                                        <li key={idx} className="py-2 flex justify-between items-center gap-4">
+                                            <span className="truncate flex-1 font-medium">{item.name}</span>
+                                            <span className="text-gray-500 font-mono text-xs">x{item.quantity}</span>
+                                            <span className="font-bold text-slate-900">{formatPrice(item.price * item.quantity)}</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-100 font-sans text-slate-900 flex flex-col relative selection:bg-slate-300">
+      <Navbar />
+      <main className="flex-grow">
+        {currentView === 'home' && <HomeView />}
+        {currentView === 'cart' && <CartView />}
+        {currentView === 'checkout' && <CheckoutView />}
+        {currentView === 'success' && <SuccessView />}
+        {currentView === 'admin' && <AdminView />}
+        {currentView === 'orders' && <OrdersView />}
+      </main>
+
+      {/* --- КОРПОРАТИВНЫЙ ФУТЕР --- */}
+      <footer className="bg-slate-900 text-slate-300 pt-12 pb-6 mt-auto border-t-4 border-slate-800">
+        <div className="max-w-7xl mx-auto px-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8 border-b border-slate-800 pb-8">
+                <div className="md:col-span-2">
+                    <div className="flex items-center gap-2 mb-4">
+                        <Box size={24} className="text-white" />
+                        <span className="font-bold text-2xl tracking-tight text-white uppercase">{storeConfig.name}</span>
+                    </div>
+                    <p className="text-sm text-slate-400 max-w-sm mb-4">Комплексное снабжение объектов. Прямые поставки от ведущих производителей.</p>
+                </div>
+                <div>
+                    <h4 className="text-white font-bold mb-4 uppercase tracking-wider text-sm">Контакты</h4>
+                    <ul className="space-y-3 text-sm text-slate-400">
+                        <li className="flex items-center gap-2"><Phone size={16}/> <a href={`tel:${storeConfig.phone}`} className="hover:text-white">{storeConfig.phone}</a></li>
+                        <li className="flex items-center gap-2"><Mail size={16}/> <a href={`mailto:${storeConfig.email}`} className="hover:text-white">{storeConfig.email}</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div className="flex flex-col md:flex-row justify-between items-center text-xs text-slate-500">
+                <p className="mb-4 md:mb-0">© {new Date().getFullYear()} {storeConfig.name}. Все права защищены.</p>
+                <div className="flex items-center gap-2">
+                {!isAdmin ? (
+                    <button onClick={() => setLoginModal({ isOpen: true, password: '', error: '' })} className="flex items-center gap-1.5 hover:text-slate-300 bg-slate-800 px-3 py-1.5 rounded-sm border border-slate-700">
+                        <Lock size={14} /> Вход для партнеров
+                    </button>
+                ) : (
+                    <span className="text-green-500 flex items-center gap-1.5 bg-green-500/10 px-3 py-1.5 rounded border border-green-500/20"><ShieldAlert size={14} /> Вы авторизованы</span>
+                )}
+                </div>
+            </div>
+        </div>
+      </footer>
+
+      {/* --- МОДАЛЬНЫЕ ОКНА --- */}
+      {loginModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-[100] px-4 backdrop-blur-sm">
+          <div className="bg-white p-8 rounded-sm shadow-2xl max-w-sm w-full border border-gray-200">
+            <h3 className="text-xl font-extrabold mb-2 text-slate-900 flex items-center gap-2"><Lock size={20} className="text-slate-500"/> Доступ в систему</h3>
+            <p className="text-sm text-gray-500 mb-6">Введите пин-код администратора.</p>
+            <input type="password" autoFocus className="w-full p-3 border border-gray-300 rounded-sm mb-1 text-base focus:outline-none focus:ring-2 focus:ring-slate-800" placeholder="Пароль..." value={loginModal.password} onChange={e => setLoginModal({...loginModal, password: e.target.value})} onKeyDown={e => e.key === 'Enter' && handleLoginSubmit()} />
+            <div className="h-6 mb-4 flex items-center">
+                {loginModal.error && <p className="text-red-500 text-xs font-bold bg-red-50 px-2 py-1 rounded w-full border border-red-100">{loginModal.error}</p>}
+            </div>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setLoginModal({isOpen: false, password: '', error: ''})} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-sm">Отмена</button>
+              <button onClick={handleLoginSubmit} className="px-6 py-2.5 text-sm font-bold bg-slate-900 text-white rounded-sm hover:opacity-90">Войти</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {alertModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-[100] px-4 backdrop-blur-sm">
+          <div className="bg-white p-8 rounded-sm shadow-2xl max-w-sm w-full text-center border border-gray-200">
+            <h3 className="text-lg font-bold mb-8 text-slate-900">{alertModal.message}</h3>
+            <button onClick={() => setAlertModal({isOpen: false, message: ''})} className="px-8 py-3 text-sm font-bold bg-slate-900 text-white rounded-sm hover:opacity-90 w-full uppercase">Понятно</button>
+          </div>
+        </div>
+      )}
+
+      {confirmModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-[100] px-4 backdrop-blur-sm">
+          <div className="bg-white p-8 rounded-sm shadow-2xl max-w-sm w-full border border-gray-200">
+            <h3 className="text-lg font-bold mb-8 text-slate-900 text-center">{confirmModal.message}</h3>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmModal({isOpen: false, message: '', onConfirm: null})} className="flex-1 py-3 text-sm font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-sm">Отмена</button>
+              <button onClick={() => { confirmModal.onConfirm(); setConfirmModal({isOpen: false, message: '', onConfirm: null}); }} className="flex-1 py-3 text-sm font-bold bg-red-600 text-white hover:bg-red-700 rounded-sm">Да, удалить</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
